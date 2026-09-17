@@ -214,6 +214,23 @@ sistema-multiagente-langgraph/
 ├── README.md
 ├── graph.mmd
 └── graph.png
+```
+
+---
+
+## Diagrama del grafo
+
+El siguiente diagrama fue generado automáticamente a partir del grafo implementado en `graph.py` utilizando `generate_diagram.py`.
+
+![Diagrama del sistema multiagente](graph.png)
+
+El código Mermaid generado automáticamente también se encuentra disponible en:
+
+```text
+graph.mmd
+```
+
+---
 
 ## Instalación
 
