@@ -1,79 +1,203 @@
 # Sistema Multiagente con LangGraph
 
-Proyecto desarrollado utilizando LangGraph para implementar
-un sistema multiagente compuesto por un supervisor y diferentes
-agentes especializados.
+Proyecto desarrollado con **LangGraph** para implementar un sistema multiagente simple, con una arquitectura centralizada basada en un **Supervisor** que coordina agentes especializados.
 
-## Arquitectura
+## Objetivo del proyecto
 
-El sistema contiene los siguientes componentes:
+El objetivo es demostrar cómo modelar un flujo multiagente usando un grafo con estado compartido, en el que distintos especialistas colaboran de forma ordenada para responder una consulta.
 
-- Supervisor
-- Research Agent
-- Analyst Agent
-- Validation Node
+El sistema trabaja con:
 
-El supervisor analiza dinámicamente el estado compartido y
-decide cuál será el siguiente agente encargado de continuar
-el procesamiento.
+- un **Supervisor** que decide dinámicamente qué nodo ejecutar;
+- un **Research Agent** que obtiene información;
+- un **Analyst Agent** que analiza la información obtenida;
+- un nodo de **Validation** que verifica la calidad mínima del resultado antes de finalizar.
 
-## Diagrama del grafo
+---
 
-```mermaid
-flowchart TD
+## Arquitectura multiagente
 
-    START --> Supervisor
+El sistema está compuesto por los siguientes nodos:
 
-    Supervisor -->|Sin investigación| Research
-    Research --> Supervisor
+- **Supervisor**
+- **Research Agent**
+- **Analyst Agent**
+- **Validation Node**
 
-    Supervisor -->|Investigación disponible| Analyst
-    Analyst --> Supervisor
+La arquitectura es **centralizada**, porque el Supervisor controla el flujo y decide qué nodo debe ejecutarse en cada momento según el estado compartido.
 
-    Supervisor -->|Resultados completos| Validation
+---
 
-    Validation --> END
-```
+## Flujo general
 
-## Topología
+El flujo esperado del grafo es:
 
-Se eligió una arquitectura centralizada basada en un nodo
-Supervisor.
+**START → Supervisor → Research → Supervisor → Analyst → Supervisor → Validation → END**
 
-El Supervisor es responsable de decidir dinámicamente qué
-especialista debe ejecutarse dependiendo de la información
-disponible en el estado compartido.
+### Explicación del flujo
 
-El Research Agent obtiene información utilizando una
-herramienta de búsqueda sobre una base de conocimiento local.
+1. **Supervisor**
+   - analiza el estado actual;
+   - si todavía no existe `research_result`, delega en `Research`;
+   - si ya existe `research_result` pero no existe `analysis_result`, delega en `Analyst`;
+   - si ambos resultados ya existen, delega en `Validation`.
 
-El Analyst Agent procesa los resultados obtenidos por el
-Research Agent y utiliza una herramienta para identificar
-los conceptos principales.
+2. **Research Agent**
+   - recibe la consulta del usuario;
+   - utiliza la herramienta `buscar_informacion()`;
+   - guarda el resultado en `research_result`.
 
-Finalmente, el nodo Validation verifica que los resultados
-generados por los especialistas cumplan una serie de
-condiciones mínimas antes de finalizar el flujo.
+3. **Analyst Agent**
+   - toma `research_result`;
+   - utiliza la herramienta `extraer_palabras_clave()`;
+   - genera un análisis textual;
+   - guarda el resultado en `analysis_result`.
+
+4. **Validation Node**
+   - comprueba que la investigación y el análisis no estén vacíos ni sean demasiado cortos;
+   - si la validación es correcta, establece `validated = True`;
+   - genera `final_answer`.
+
+5. **END**
+   - el flujo finaliza cuando el nodo Validation termina su trabajo.
+
+---
+
+## AgentState
+
+El proyecto utiliza un estado compartido definido con `TypedDict` en `state.py`.
+
+Campos del estado:
+
+- `query`: consulta inicial del usuario.
+- `next_agent`: siguiente nodo que debe ejecutar el Supervisor.
+- `research_result`: resultado producido por el Research Agent.
+- `analysis_result`: resultado producido por el Analyst Agent.
+- `validated`: indica si la salida final superó la validación.
+- `final_answer`: respuesta final del sistema.
+
+Este estado permite que todos los nodos compartan información sin sobrescribir directamente el trabajo de los demás.
+
+---
+
+## Supervisor
+
+El Supervisor es el nodo central del sistema.
+
+Su función es analizar el estado actual y decidir dinámicamente qué nodo ejecutar después. Para ello utiliza:
+
+- `Literal`
+- `add_conditional_edges()`
+
+La decisión se basa en si ya existen o no los resultados intermedios del flujo.
+
+Esto permite una delegación clara y controlada.
+
+---
+
+## Research Agent
+
+El **Research Agent** es el especialista de investigación.
+
+Responsabilidades:
+
+- leer la consulta del usuario desde `query`;
+- ejecutar la herramienta `buscar_informacion()`;
+- devolver un diccionario con `research_result`.
+
+Este agente **no analiza**, solo obtiene información.
+
+---
+
+## Analyst Agent
+
+El **Analyst Agent** es el especialista de análisis.
+
+Responsabilidades:
+
+- leer `research_result`;
+- procesar esa información;
+- ejecutar la herramienta `extraer_palabras_clave()`;
+- devolver un diccionario con `analysis_result`.
+
+Este agente se mantiene separado del Research Agent para demostrar especialización de tareas.
+
+---
+
+## Validation Node
+
+El nodo **Validation** verifica que la salida tenga una calidad mínima antes de finalizar.
+
+Actualmente valida que:
+
+- `research_result` no sea vacío;
+- `research_result` tenga una longitud mínima;
+- `analysis_result` no sea vacío;
+- `analysis_result` tenga una longitud mínima.
+
+Si la validación es correcta:
+
+- `validated = True`
+- `final_answer` contiene la respuesta validada.
+
+Si falla:
+
+- `validated = False`
+- `final_answer` contiene el detalle del problema detectado.
+
+---
+
+## Herramientas
+
+Las herramientas se encuentran en `tools.py`.
+
+### `buscar_informacion(consulta: str) -> str`
+
+Realiza una búsqueda local sobre una base de conocimiento simple.
+
+Características:
+
+- no depende de APIs externas;
+- no requiere claves;
+- devuelve siempre una respuesta textual.
+
+### `extraer_palabras_clave(texto: str) -> str`
+
+Analiza el texto recibido y devuelve palabras clave frecuentes.
+
+---
 
 ## Manejo de conflictos entre agentes
 
-Los agentes no modifican directamente el trabajo de otros
-especialistas.
+Los agentes no compiten entre sí ni pisan directamente el resultado de otros.
 
-Todos comparten información mediante el estado del grafo y
-el Supervisor controla el orden de ejecución.
+El manejo de conflictos se resuelve mediante:
 
-Además, antes de finalizar el flujo, el nodo Validation
-comprueba la calidad mínima de los resultados.
+- un estado compartido bien definido;
+- una topología centralizada;
+- un Supervisor que controla el orden de ejecución;
+- un nodo Validation que verifica el resultado antes de finalizar.
 
-Esta arquitectura reduce posibles conflictos entre los
-agentes y permite que cada especialista tenga una
-responsabilidad claramente definida.
+Esto garantiza que cada agente tenga una responsabilidad clara.
 
-## Estructura
+---
+
+## Condición de finalización
+
+La ejecución termina cuando:
+
+- el Supervisor envía el flujo a `Validation`;
+- `Validation` genera `final_answer`;
+- el grafo avanza a `END`.
+
+De esta forma se evita que el flujo siga ejecutándose indefinidamente.
+
+---
+
+## Estructura real del repositorio
 
 ```text
-entrega_langgraph/
+sistema-multiagente-langgraph/
 │
 ├── agents/
 │   ├── __init__.py
@@ -84,33 +208,38 @@ entrega_langgraph/
 ├── tools.py
 ├── graph.py
 ├── main.py
+├── generate_diagram.py
+├── demo.ipynb
 ├── requirements.txt
-└── README.md
-```
+├── README.md
+├── graph.mmd
+└── graph.png
 
 ## Instalación
 
-Crear un entorno virtual:
+### 1. Crear el entorno virtual
 
 ```bash
 python -m venv .venv
 ```
 
-Activar el entorno en Windows:
+### 2. Activarlo en Windows PowerShell
 
 ```bash
 .venv\Scripts\Activate.ps1
 ```
 
-Instalar las dependencias:
+### 3. Instalar dependencias
 
 ```bash
 pip install -r requirements.txt
 ```
 
+---
+
 ## Ejecución
 
-Ejecutar:
+Para ejecutar la demo principal por consola:
 
 ```bash
 python main.py
@@ -119,9 +248,116 @@ python main.py
 Luego ingresar una consulta, por ejemplo:
 
 ```text
-¿Qué es LangGraph?
+Explicá qué es LangGraph, cómo se relaciona con sistemas multiagente y cuáles son sus conceptos principales.
 ```
 
-El Supervisor enviará la consulta al Research Agent,
-posteriormente al Analyst Agent y finalmente al nodo
-Validation.
+---
+
+## Ejemplo de ejecución
+
+Durante la ejecución se observa un flujo similar a este:
+
+```text
+[SUPERVISOR] Analizando estado...
+[SUPERVISOR] Siguiente nodo: research
+
+[RESEARCH AGENT]
+...
+
+[SUPERVISOR] Analizando estado...
+[SUPERVISOR] Siguiente nodo: analyst
+
+[ANALYST AGENT]
+...
+
+[SUPERVISOR] Analizando estado...
+[SUPERVISOR] Siguiente nodo: validation
+
+[VALIDATION] Validando resultados...
+```
+
+Al finalizar, el sistema muestra:
+
+- la respuesta validada;
+- el análisis generado;
+- la respuesta final del flujo.
+
+---
+
+## Notebook de demostración
+
+El archivo:
+
+```text
+demo.ipynb
+```
+
+demuestra el funcionamiento del sistema paso a paso.
+
+Incluye:
+
+- importación del grafo;
+- carga de una consulta de prueba;
+- ejecución con `graph.invoke()`;
+- visualización de:
+  - `query`
+  - `research_result`
+  - `analysis_result`
+  - `validated`
+  - `final_answer`
+
+Esto permite cumplir con el requisito de mostrar el flujo de delegación sin necesidad de grabar un video.
+
+---
+
+## Generación automática del diagrama
+
+El archivo:
+
+```text
+generate_diagram.py
+```
+
+permite generar automáticamente el diagrama del grafo real.
+
+Ejecutar:
+
+```bash
+python generate_diagram.py
+```
+
+Esto genera:
+
+- `graph.mmd` → código Mermaid generado desde LangGraph.
+- `graph.png` → imagen del grafo generada automáticamente.
+
+El diagrama se obtiene a partir de:
+
+- `graph.get_graph()`
+- `draw_mermaid()`
+- `draw_mermaid_png()`
+
+Esto garantiza que el diagrama corresponda al grafo implementado y no a una versión manual desactualizada.
+
+---
+
+## Tecnologías utilizadas
+
+- Python
+- LangGraph
+
+---
+
+## Dependencias
+
+El archivo `requirements.txt` contiene únicamente la dependencia necesaria para este proyecto:
+
+```text
+langgraph
+```
+
+---
+
+## Observación final
+
+Este proyecto fue diseñado para ser simple, reproducible y ejecutable sin depender de APIs externas ni configuraciones adicionales complejas.
