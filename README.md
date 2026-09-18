@@ -1,380 +1,810 @@
-# Sistema Multiagente con LangGraph
+# Sistema Multiagente con LangGraph — API Asíncrona, Redis, HITL y Observabilidad
 
-Proyecto desarrollado con **LangGraph** para implementar un sistema multiagente simple, con una arquitectura centralizada basada en un **Supervisor** que coordina agentes especializados.
+Proyecto desarrollado en Python con LangGraph para implementar un sistema multiagente con API REST asíncrona, persistencia en Redis, Human-in-the-loop (HITL), integración con un LLM real mediante Google Gemini y observabilidad con LangSmith.
 
-## Objetivo del proyecto
+## Características principales
 
-El objetivo es demostrar cómo modelar un flujo multiagente usando un grafo con estado compartido, en el que distintos especialistas colaboran de forma ordenada para responder una consulta.
+El sistema implementa:
 
-El sistema trabaja con:
-
-- un **Supervisor** que decide dinámicamente qué nodo ejecutar;
-- un **Research Agent** que obtiene información;
-- un **Analyst Agent** que analiza la información obtenida;
-- un nodo de **Validation** que verifica la calidad mínima del resultado antes de finalizar.
-
----
-
-## Arquitectura multiagente
-
-El sistema está compuesto por los siguientes nodos:
-
-- **Supervisor**
-- **Research Agent**
-- **Analyst Agent**
-- **Validation Node**
-
-La arquitectura es **centralizada**, porque el Supervisor controla el flujo y decide qué nodo debe ejecutarse en cada momento según el estado compartido.
+- arquitectura multiagente con LangGraph;
+- Supervisor para controlar el flujo;
+- Research Agent conectado a Google Gemini;
+- Analyst Agent para procesamiento posterior;
+- nodo de aprobación humana;
+- pausa real mediante `interrupt()`;
+- reanudación mediante `Command(resume=...)`;
+- persistencia de checkpoints de LangGraph en Redis;
+- persistencia independiente del estado de jobs en Redis;
+- API REST con FastAPI;
+- procesamiento en segundo plano;
+- estados `PENDING`, `RUNNING`, `WAITING_APPROVAL`, `DONE`, `FAILED` y `REJECTED`;
+- manejo de errores del worker;
+- trazas reales en LangSmith;
+- registro de tokens, costo y latencia del LLM;
+- prueba reproducible con 5 solicitudes concurrentes;
+- cálculo de latencia p95.
 
 ---
 
-## Flujo general
+## Arquitectura
 
-El flujo esperado del grafo es:
-
-**START → Supervisor → Research → Supervisor → Analyst → Supervisor → Validation → END**
-
-### Explicación del flujo
-
-1. **Supervisor**
-   - analiza el estado actual;
-   - si todavía no existe `research_result`, delega en `Research`;
-   - si ya existe `research_result` pero no existe `analysis_result`, delega en `Analyst`;
-   - si ambos resultados ya existen, delega en `Validation`.
-
-2. **Research Agent**
-   - recibe la consulta del usuario;
-   - utiliza la herramienta `buscar_informacion()`;
-   - guarda el resultado en `research_result`.
-
-3. **Analyst Agent**
-   - toma `research_result`;
-   - utiliza la herramienta `extraer_palabras_clave()`;
-   - genera un análisis textual;
-   - guarda el resultado en `analysis_result`.
-
-4. **Validation Node**
-   - comprueba que la investigación y el análisis no estén vacíos ni sean demasiado cortos;
-   - si la validación es correcta, establece `validated = True`;
-   - genera `final_answer`.
-
-5. **END**
-   - el flujo finaliza cuando el nodo Validation termina su trabajo.
-
----
-
-## AgentState
-
-El proyecto utiliza un estado compartido definido con `TypedDict` en `state.py`.
-
-Campos del estado:
-
-- `query`: consulta inicial del usuario.
-- `next_agent`: siguiente nodo que debe ejecutar el Supervisor.
-- `research_result`: resultado producido por el Research Agent.
-- `analysis_result`: resultado producido por el Analyst Agent.
-- `validated`: indica si la salida final superó la validación.
-- `final_answer`: respuesta final del sistema.
-
-Este estado permite que todos los nodos compartan información sin sobrescribir directamente el trabajo de los demás.
-
----
-
-## Supervisor
-
-El Supervisor es el nodo central del sistema.
-
-Su función es analizar el estado actual y decidir dinámicamente qué nodo ejecutar después. Para ello utiliza:
-
-- `Literal`
-- `add_conditional_edges()`
-
-La decisión se basa en si ya existen o no los resultados intermedios del flujo.
-
-Esto permite una delegación clara y controlada.
-
----
-
-## Research Agent
-
-El **Research Agent** es el especialista de investigación.
-
-Responsabilidades:
-
-- leer la consulta del usuario desde `query`;
-- ejecutar la herramienta `buscar_informacion()`;
-- devolver un diccionario con `research_result`.
-
-Este agente **no analiza**, solo obtiene información.
-
----
-
-## Analyst Agent
-
-El **Analyst Agent** es el especialista de análisis.
-
-Responsabilidades:
-
-- leer `research_result`;
-- procesar esa información;
-- ejecutar la herramienta `extraer_palabras_clave()`;
-- devolver un diccionario con `analysis_result`.
-
-Este agente se mantiene separado del Research Agent para demostrar especialización de tareas.
-
----
-
-## Validation Node
-
-El nodo **Validation** verifica que la salida tenga una calidad mínima antes de finalizar.
-
-Actualmente valida que:
-
-- `research_result` no sea vacío;
-- `research_result` tenga una longitud mínima;
-- `analysis_result` no sea vacío;
-- `analysis_result` tenga una longitud mínima.
-
-Si la validación es correcta:
-
-- `validated = True`
-- `final_answer` contiene la respuesta validada.
-
-Si falla:
-
-- `validated = False`
-- `final_answer` contiene el detalle del problema detectado.
-
----
-
-## Herramientas
-
-Las herramientas se encuentran en `tools.py`.
-
-### `buscar_informacion(consulta: str) -> str`
-
-Realiza una búsqueda local sobre una base de conocimiento simple.
-
-Características:
-
-- no depende de APIs externas;
-- no requiere claves;
-- devuelve siempre una respuesta textual.
-
-### `extraer_palabras_clave(texto: str) -> str`
-
-Analiza el texto recibido y devuelve palabras clave frecuentes.
-
----
-
-## Manejo de conflictos entre agentes
-
-Los agentes no compiten entre sí ni pisan directamente el resultado de otros.
-
-El manejo de conflictos se resuelve mediante:
-
-- un estado compartido bien definido;
-- una topología centralizada;
-- un Supervisor que controla el orden de ejecución;
-- un nodo Validation que verifica el resultado antes de finalizar.
-
-Esto garantiza que cada agente tenga una responsabilidad clara.
-
----
-
-## Condición de finalización
-
-La ejecución termina cuando:
-
-- el Supervisor envía el flujo a `Validation`;
-- `Validation` genera `final_answer`;
-- el grafo avanza a `END`.
-
-De esta forma se evita que el flujo siga ejecutándose indefinidamente.
-
----
-
-## Estructura real del repositorio
+El flujo general es:
 
 ```text
-sistema-multiagente-langgraph/
-│
-├── agents/
-│   ├── __init__.py
-│   ├── research_agent.py
-│   └── analyst_agent.py
-│
-├── state.py
-├── tools.py
-├── graph.py
-├── main.py
-├── generate_diagram.py
-├── demo.ipynb
-├── requirements.txt
-├── README.md
-├── graph.mmd
-└── graph.png
+Cliente
+   |
+   v
+FastAPI
+POST /tasks
+   |
+   +--> Redis: estado del job
+   |
+   +--> Worker asíncrono
+            |
+            v
+        LangGraph
+            |
+            v
+       Supervisor
+            |
+            v
+      Research Agent
+            |
+            v
+    Google Gemini 3.6 Flash
+            |
+            v
+       Supervisor
+            |
+            v
+       Analyst Agent
+            |
+            v
+       Supervisor
+            |
+            v
+       Approval Node
+          /      \
+         /        \
+ no crítico      crítico
+    |               |
+    v               v
+Validation      interrupt()
+    |               |
+    v         WAITING_APPROVAL
+   DONE             |
+                    v
+          POST /tasks/{id}/approve
+                    |
+                    v
+          Command(resume=...)
+                    |
+              +-----+-----+
+              |           |
+           aprobado    rechazado
+              |           |
+              v           v
+         Validation    REJECTED
+              |
+              v
+             DONE
 ```
 
 ---
 
-## Diagrama del grafo
+## Agentes y nodos
 
-El siguiente diagrama fue generado automáticamente a partir del grafo implementado en `graph.py` utilizando `generate_diagram.py`.
+### Supervisor
 
-![Diagrama del sistema multiagente](graph.png)
+Analiza el estado compartido y decide qué nodo debe ejecutarse a continuación.
 
-El código Mermaid generado automáticamente también se encuentra disponible en:
+### Research Agent
+
+Recibe la consulta y realiza una llamada real al modelo:
 
 ```text
-graph.mmd
+gemini-3.6-flash
+```
+
+La respuesta del LLM se almacena en:
+
+```text
+research_result
+```
+
+Las llamadas quedan registradas en LangSmith junto con:
+
+- input tokens;
+- output tokens;
+- total tokens;
+- duración;
+- costo calculado por la plataforma.
+
+### Analyst Agent
+
+Procesa el resultado de investigación y extrae conceptos principales mediante una herramienta local.
+
+El resultado se almacena en:
+
+```text
+analysis_result
+```
+
+### Approval Node
+
+Determina si una tarea necesita aprobación humana.
+
+Para las pruebas del proyecto, una consulta que contenga:
+
+```text
+[critical]
+```
+
+activa el flujo HITL.
+
+En ese caso LangGraph ejecuta:
+
+```python
+interrupt(...)
+```
+
+y el job queda en:
+
+```text
+WAITING_APPROVAL
+```
+
+### Validation Node
+
+Comprueba que existan resultados suficientes y genera la respuesta final del sistema.
+
+---
+
+## Estados de los jobs
+
+Los estados utilizados son:
+
+```text
+PENDING
+RUNNING
+WAITING_APPROVAL
+DONE
+FAILED
+REJECTED
+```
+
+### PENDING
+
+El job fue creado pero todavía no comenzó a ejecutarse.
+
+### RUNNING
+
+El worker está procesando el grafo.
+
+### WAITING_APPROVAL
+
+LangGraph fue pausado mediante `interrupt()` y espera una decisión externa.
+
+### DONE
+
+La tarea finalizó correctamente.
+
+### FAILED
+
+Ocurrió una excepción durante el procesamiento.
+
+### REJECTED
+
+La operación fue rechazada por aprobación humana.
+
+---
+
+## Redis
+
+Redis cumple dos responsabilidades diferentes.
+
+### 1. Estado de jobs
+
+Se almacenan datos como:
+
+```text
+job_id
+status
+input
+result
+error
+thread_id
+created_at
+updated_at
+started_at
+finished_at
+```
+
+Las claves utilizan el formato:
+
+```text
+job:{job_id}
+```
+
+### 2. Checkpoints de LangGraph
+
+LangGraph utiliza:
+
+```text
+AsyncRedisSaver
+```
+
+para persistir su estado interno.
+
+Esto permite que una ejecución pausada por HITL pueda reanudarse utilizando el mismo:
+
+```text
+thread_id
+```
+
+incluso después de reiniciar la API.
+
+---
+
+## Requisitos
+
+- Windows 10/11
+- PowerShell
+- Python 3.12+
+- Redis compatible con Redis Search y RedisJSON
+- API key de Google Gemini
+- cuenta de LangSmith para observabilidad
+
+Versiones verificadas durante el desarrollo:
+
+```text
+Python 3.12.10
+LangGraph 1.2.11
+langgraph-checkpoint 4.2.0
+langgraph-checkpoint-redis 0.5.2
+redis 8.1.0
+FastAPI 0.141.1
+Uvicorn 0.52.0
+HTTPX 0.28.1
+LangSmith 0.12.6
+langchain-google-genai 4.4.0
+Pydantic 2.13.5
 ```
 
 ---
 
 ## Instalación
 
-### 1. Crear el entorno virtual
+### 1. Clonar el repositorio
 
-```bash
-python -m venv .venv
+```powershell
+git clone https://github.com/agustingggutierrez/sistema-multiagente-langgraph.git
+cd sistema-multiagente-langgraph
 ```
 
-### 2. Activarlo en Windows PowerShell
+### 2. Crear entorno virtual
 
-```bash
-.venv\Scripts\Activate.ps1
+```powershell
+py -3.12 -m venv .venv
 ```
 
-### 3. Instalar dependencias
+### 3. Activar entorno virtual
 
-```bash
-pip install -r requirements.txt
+```powershell
+.\.venv\Scripts\Activate.ps1
 ```
 
----
+### 4. Instalar dependencias
 
-## Ejecución
-
-Para ejecutar la demo principal por consola:
-
-```bash
-python main.py
-```
-
-Luego ingresar una consulta, por ejemplo:
-
-```text
-Explicá qué es LangGraph, cómo se relaciona con sistemas multiagente y cuáles son sus conceptos principales.
+```powershell
+python -m pip install -r requirements.txt
 ```
 
 ---
 
-## Ejemplo de ejecución
+## Variables de entorno
 
-Durante la ejecución se observa un flujo similar a este:
+El repositorio contiene:
 
 ```text
-[SUPERVISOR] Analizando estado...
-[SUPERVISOR] Siguiente nodo: research
-
-[RESEARCH AGENT]
-...
-
-[SUPERVISOR] Analizando estado...
-[SUPERVISOR] Siguiente nodo: analyst
-
-[ANALYST AGENT]
-...
-
-[SUPERVISOR] Analizando estado...
-[SUPERVISOR] Siguiente nodo: validation
-
-[VALIDATION] Validando resultados...
+.env.example
 ```
 
-Al finalizar, el sistema muestra:
+como referencia.
 
-- la respuesta validada;
-- el análisis generado;
-- la respuesta final del flujo.
+Las claves reales NO deben subirse al repositorio.
+
+El proyecto lee las variables desde el entorno del sistema o de PowerShell.
+
+### Redis
+
+```powershell
+$env:REDIS_URL="redis://127.0.0.1:6380"
+```
+
+### Google Gemini
+
+```powershell
+$geminiKey = Read-Host "API key de Gemini" -AsSecureString
+$env:GOOGLE_API_KEY = [System.Net.NetworkCredential]::new("", $geminiKey).Password
+```
+
+### LangSmith
+
+```powershell
+$langsmithKey = Read-Host "API key de LangSmith" -AsSecureString
+$env:LANGSMITH_API_KEY = [System.Net.NetworkCredential]::new("", $langsmithKey).Password
+
+$env:LANGSMITH_TRACING="true"
+$env:LANGSMITH_PROJECT="pre-entrega-7-langgraph"
+```
+
+Verificación sin mostrar secretos:
+
+```powershell
+Write-Host "Gemini:" (-not [string]::IsNullOrWhiteSpace($env:GOOGLE_API_KEY))
+Write-Host "LangSmith:" (-not [string]::IsNullOrWhiteSpace($env:LANGSMITH_API_KEY))
+```
 
 ---
 
-## Notebook de demostración
+## Redis local
 
-El archivo:
+El proyecto necesita una instancia Redis con soporte para:
+
+- Redis Search;
+- RedisJSON.
+
+Durante el desarrollo se utilizó Redis 8.10.2 dentro de WSL Ubuntu en:
 
 ```text
-demo.ipynb
+redis://127.0.0.1:6380
 ```
 
-demuestra el funcionamiento del sistema paso a paso.
+En el entorno utilizado durante el desarrollo se inicia con:
 
-Incluye:
+```powershell
+wsl -d Ubuntu -- bash -lc 'cd ~/redis-build/redis-8.10.2 && ./src/redis-server --port 6380 --daemonize yes --loadmodule ./modules/redisearch/redisearch.so --loadmodule ./modules/redisjson/rejson.so'
+```
 
-- importación del grafo;
-- carga de una consulta de prueba;
-- ejecución con `graph.invoke()`;
-- visualización de:
-  - `query`
-  - `research_result`
-  - `analysis_result`
-  - `validated`
-  - `final_answer`
+Comprobar conexión:
 
-Esto permite cumplir con el requisito de mostrar el flujo de delegación sin necesidad de grabar un video.
+```powershell
+wsl -d Ubuntu -- redis-cli -p 6380 PING
+```
+
+Resultado esperado:
+
+```text
+PONG
+```
+
+También puede utilizarse cualquier instancia Redis compatible configurando correctamente:
+
+```text
+REDIS_URL
+```
 
 ---
 
-## Generación automática del diagrama
+## Iniciar la API
 
-El archivo:
+Con Redis activo y las variables de entorno configuradas:
+
+```powershell
+python -m uvicorn api:app --host 127.0.0.1 --port 8000
+```
+
+Resultado esperado:
 
 ```text
-generate_diagram.py
+Uvicorn running on http://127.0.0.1:8000
 ```
 
-permite generar automáticamente el diagrama del grafo real.
+Swagger queda disponible en:
 
-Ejecutar:
-
-```bash
-python generate_diagram.py
+```text
+http://127.0.0.1:8000/docs
 ```
 
-Esto genera:
+---
 
-- `graph.mmd` → código Mermaid generado desde LangGraph.
-- `graph.png` → imagen del grafo generada automáticamente.
+## Endpoints
 
-El diagrama se obtiene a partir de:
+### GET /health
 
-- `graph.get_graph()`
-- `draw_mermaid()`
-- `draw_mermaid_png()`
+Comprueba la API y la conexión con Redis.
 
-Esto garantiza que el diagrama corresponda al grafo implementado y no a una versión manual desactualizada.
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/health"
+```
+
+---
+
+### POST /tasks
+
+Crea un nuevo job y devuelve inmediatamente su identificador.
+
+```powershell
+$body = @{
+    query = "Explica que es LangGraph"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://127.0.0.1:8000/tasks" `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+Respuesta inicial esperada:
+
+```json
+{
+  "job_id": "...",
+  "thread_id": "...",
+  "status": "PENDING"
+}
+```
+
+La ejecución continúa en segundo plano.
+
+---
+
+### GET /tasks/{job_id}
+
+Permite consultar el estado:
+
+```powershell
+Invoke-RestMethod `
+    -Method Get `
+    -Uri "http://127.0.0.1:8000/tasks/JOB_ID"
+```
+
+Los estados posibles son:
+
+```text
+PENDING
+RUNNING
+WAITING_APPROVAL
+DONE
+FAILED
+REJECTED
+```
+
+---
+
+## Human-in-the-loop
+
+Para activar una tarea crítica:
+
+```powershell
+$body = @{
+    query = "[critical] Autorizar esta operacion"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://127.0.0.1:8000/tasks" `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+El job debe alcanzar:
+
+```text
+WAITING_APPROVAL
+```
+
+### Aprobar
+
+```powershell
+$approval = @{
+    approved = $true
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://127.0.0.1:8000/tasks/JOB_ID/approve" `
+    -ContentType "application/json" `
+    -Body $approval
+```
+
+LangGraph reanuda el checkpoint real utilizando el mismo `thread_id`.
+
+### Rechazar
+
+```powershell
+$approval = @{
+    approved = $false
+} | ConvertTo-Json
+```
+
+El job finaliza en:
+
+```text
+REJECTED
+```
+
+---
+
+## Manejo de errores
+
+Si ocurre una excepción dentro del worker:
+
+```text
+RUNNING
+   |
+   v
+FAILED
+```
+
+Redis almacena el error y los timestamps correspondientes.
+
+La API también maneja:
+
+- job inexistente → HTTP 404;
+- job que no espera aprobación → HTTP 409;
+- Redis no disponible → HTTP 503;
+- errores del grafo;
+- errores del LLM;
+- errores del worker.
+
+---
+
+## Prueba de 5 solicitudes concurrentes
+
+El proyecto incluye:
+
+```text
+load_test.py
+```
+
+La prueba utiliza:
+
+```text
+asyncio
+httpx.AsyncClient
+```
+
+Ejecutar con la API activa:
+
+```powershell
+python .\load_test.py
+```
+
+El script:
+
+1. envía 5 solicitudes concurrentemente;
+2. registra los `job_id`;
+3. consulta sus estados;
+4. espera su finalización;
+5. mide el tiempo de respuesta del POST;
+6. mide el tiempo total de procesamiento;
+7. calcula p95;
+8. muestra los estados finales.
+
+---
+
+## Resultado real de prueba concurrente
+
+En una ejecución verificada se obtuvo:
+
+```text
+Solicitudes: 5
+
+POST promedio: 90.73 ms
+POST mínimo: 56.81 ms
+POST máximo: 155.99 ms
+POST p95: 142.55 ms
+
+Procesamiento promedio: 5985.36 ms
+Procesamiento p95: 9041.52 ms
+
+Tiempo total de la prueba concurrente: 10010.39 ms
+
+Estados finales:
+DONE
+DONE
+DONE
+DONE
+DONE
+```
+
+Esto demuestra que `POST /tasks` devuelve el identificador antes de finalizar el procesamiento completo.
+
+---
+
+## Observabilidad con LangSmith
+
+Las ejecuciones de LangGraph quedan registradas en el proyecto:
+
+```text
+pre-entrega-7-langgraph
+```
+
+LangSmith permite visualizar:
+
+- ejecución completa del grafo;
+- Supervisor;
+- Research Agent;
+- Analyst Agent;
+- Approval;
+- Validation;
+- llamada a `ChatGoogleGenerativeAI`;
+- duración;
+- input tokens;
+- output tokens;
+- total tokens;
+- costo calculado por la plataforma;
+- errores.
+
+---
+
+## LLM utilizado
+
+El Research Agent utiliza:
+
+```text
+gemini-3.6-flash
+```
+
+Durante una prueba individual real se registraron:
+
+```text
+Input tokens: 65
+Output tokens: 95
+Total tokens: 160
+```
+
+LangSmith calcula el costo de las ejecuciones según su mapa de precios.
+
+---
+
+## Evidencias
+
+Las capturas reales se encuentran en:
+
+```text
+screenshots/
+```
+
+### 01_traces_5_requests.png
+
+Muestra las ejecuciones concurrentes registradas en LangSmith junto con:
+
+- estado;
+- duración;
+- tokens;
+- costo.
+
+### 02_trace_detail_nodes_llm.png
+
+Muestra el detalle de una ejecución y los nodos del grafo, incluyendo la llamada al LLM.
+
+### 03_latency_p95.png
+
+Muestra el resultado de la prueba concurrente y las métricas p95.
+
+---
+
+## Estructura principal
+
+```text
+sistema-multiagente-langgraph/
+|
+|-- agents/
+|   |-- __init__.py
+|   |-- research_agent.py
+|   `-- analyst_agent.py
+|
+|-- api.py
+|-- worker.py
+|-- job_store.py
+|-- graph.py
+|-- state.py
+|-- tools.py
+|-- main.py
+|-- load_test.py
+|-- demo.ipynb
+|-- generate_diagram.py
+|-- graph.mmd
+|-- graph.png
+|
+|-- screenshots/
+|   |-- 01_traces_5_requests.png
+|   |-- 02_trace_detail_nodes_llm.png
+|   `-- 03_latency_p95.png
+|
+|-- requirements.txt
+|-- .env.example
+|-- .gitignore
+`-- README.md
+```
 
 ---
 
 ## Tecnologías utilizadas
 
-- Python
+- Python 3.12
 - LangGraph
+- LangChain
+- Google Gemini
+- FastAPI
+- Uvicorn
+- Redis
+- Redis Search
+- RedisJSON
+- HTTPX
+- asyncio
+- Pydantic
+- LangSmith
+- WSL Ubuntu
 
 ---
 
-## Dependencias
+## Seguridad
 
-El archivo `requirements.txt` contiene únicamente la dependencia necesaria para este proyecto:
+El repositorio no debe contener:
 
 ```text
-langgraph
+.env
+API keys
+passwords
+tokens privados
+.venv
+__pycache__
 ```
+
+`.gitignore` protege los archivos y directorios locales.
+
+`.env.example` contiene únicamente nombres de variables y ejemplos seguros.
 
 ---
 
-## Observación final
+## Limitación de la implementación
 
-Este proyecto fue diseñado para ser simple, reproducible y ejecutable sin depender de APIs externas ni configuraciones adicionales complejas.
+El procesamiento en segundo plano utiliza `asyncio.create_task()` dentro del proceso de FastAPI.
+
+Esto permite que `POST /tasks` responda antes de que termine LangGraph.
+
+En una arquitectura productiva distribuida podría reemplazarse por un sistema de colas externo como Celery, RQ o ARQ para obtener recuperación automática de jobs que estuvieran ejecutándose durante una caída completa del proceso.
+
+Redis mantiene de forma persistente:
+
+- estado de jobs;
+- checkpoints de LangGraph;
+- ejecuciones pausadas por HITL.
+
+---
+
+## Resultado
+
+El sistema permite demostrar:
+
+```text
+POST /tasks
+    |
+    v
+PENDING
+    |
+    v
+RUNNING
+    |
+    v
+LangGraph + Gemini
+    |
+    +--> DONE
+    |
+    +--> FAILED
+    |
+    `--> WAITING_APPROVAL
+             |
+             v
+          /approve
+         /        \
+        v          v
+      DONE      REJECTED
+```
+
+El flujo utiliza ejecuciones reales, persistencia real, llamadas reales al LLM y trazas reales de observabilidad.
