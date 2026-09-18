@@ -1,4 +1,4 @@
-from typing import TypedDict, Literal
+﻿from typing import TypedDict, Literal
 
 
 class AgentState(TypedDict, total=False):
@@ -7,11 +7,15 @@ class AgentState(TypedDict, total=False):
     next_agent: Literal[
         "research",
         "analyst",
-        "validation"
+        "approval",
+        "validation",
     ]
 
     research_result: str
     analysis_result: str
+
+    requires_approval: bool
+    approval_decision: bool
 
     validated: bool
     final_answer: str

@@ -1,6 +1,7 @@
-from typing import Literal
+﻿from typing import Literal
 
 from langgraph.graph import StateGraph, START, END
+from langgraph.types import interrupt
 
 from state import AgentState
 from agents.research_agent import research_agent
@@ -18,7 +19,7 @@ def supervisor(state: AgentState):
         siguiente = "analyst"
 
     else:
-        siguiente = "validation"
+        siguiente = "approval"
 
     print(f"[SUPERVISOR] Siguiente nodo: {siguiente}")
 
@@ -29,9 +30,71 @@ def supervisor(state: AgentState):
 
 def supervisor_router(
     state: AgentState
-) -> Literal["research", "analyst", "validation"]:
+) -> Literal["research", "analyst", "approval"]:
 
     return state["next_agent"]
+
+
+def approval_node(state: AgentState):
+
+    consulta = state.get("query", "")
+
+    requiere_aprobacion = "[critical]" in consulta.lower()
+
+    if not requiere_aprobacion:
+
+        print("\n[APPROVAL] No requiere aprobación humana.")
+
+        return {
+            "requires_approval": False,
+            "approval_decision": True,
+        }
+
+    print(
+        "\n[APPROVAL] Operación crítica detectada. "
+        "Esperando aprobación humana..."
+    )
+
+    decision = interrupt(
+        {
+            "type": "approval_required",
+            "message": "La operación fue marcada como crítica.",
+            "query": consulta,
+        }
+    )
+
+    if isinstance(decision, dict):
+        aprobada = bool(decision.get("approved", False))
+    else:
+        aprobada = bool(decision)
+
+    if aprobada:
+
+        print("\n[APPROVAL] Operación aprobada.")
+
+        return {
+            "requires_approval": True,
+            "approval_decision": True,
+        }
+
+    print("\n[APPROVAL] Operación rechazada.")
+
+    return {
+        "requires_approval": True,
+        "approval_decision": False,
+        "validated": False,
+        "final_answer": "Operación rechazada por aprobación humana.",
+    }
+
+
+def approval_router(
+    state: AgentState
+) -> Literal["validation", "rejected"]:
+
+    if state.get("approval_decision"):
+        return "validation"
+
+    return "rejected"
 
 
 def validation_node(state: AgentState):
@@ -95,6 +158,11 @@ builder.add_node(
 )
 
 builder.add_node(
+    "approval",
+    approval_node
+)
+
+builder.add_node(
     "validation",
     validation_node
 )
@@ -112,7 +180,7 @@ builder.add_conditional_edges(
     {
         "research": "research",
         "analyst": "analyst",
-        "validation": "validation",
+        "approval": "approval",
     }
 )
 
@@ -126,6 +194,17 @@ builder.add_edge(
     "analyst",
     "supervisor"
 )
+
+
+builder.add_conditional_edges(
+    "approval",
+    approval_router,
+    {
+        "validation": "validation",
+        "rejected": END,
+    }
+)
+
 
 builder.add_edge(
     "validation",
